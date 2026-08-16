@@ -1,0 +1,31 @@
+# 依赖
+node_modules/
+
+# 构建产物（不入库；npm/pnpm 发布时由 package.json 的 files 白名单显式纳入，
+# 不要删除该白名单——见 package.json "files" 字段）
+dist/
+
+# 测试与打包杂项
+coverage/
+*.tgz
+
+# 日志与诊断
+*.log
+pnpm-debug.log*
+npm-debug.log*
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# TypeScript 缓存
+*.tsbuildinfo
+
+# npm 锁文件（本项目使用 pnpm）
+package-lock.json
+
+# 系统杂项
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+*.swp

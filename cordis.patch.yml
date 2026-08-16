@@ -1,0 +1,8 @@
+# dsh-cross-collaboration bundle layer — applied when a profile lists this bundle.
+# The row mounts the plugin package by name; config is validated against the
+# plugin's exported Config schema (udpPort, deviceName, beaconMs, relayUrl).
+
+- insert:
+    - id: dsh-cross-collaboration
+      name: dsh-cross-collaboration
+      config: {}
