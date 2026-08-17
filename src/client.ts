@@ -200,6 +200,25 @@ export function apply(ctx: any) {
     );
   }
 
+  function ClockGlyph(props: { size?: number } | undefined): unknown {
+    const size = (props && props.size) || 16;
+    return React.createElement('svg', {
+      viewBox: '0 0 16 16',
+      width: size,
+      height: size,
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 1.25,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+      'aria-hidden': true,
+      focusable: false,
+    },
+      React.createElement('circle', { cx: 8, cy: 8, r: 5.5 }),
+      React.createElement('path', { d: 'M8 4.75V8l2.25 1.5' }),
+    );
+  }
+
   function PlusNodeGlyph(props: { size?: number } | undefined): unknown {
     const size = (props && props.size) || 16;
     return React.createElement('svg', {
@@ -624,7 +643,10 @@ export function apply(ctx: any) {
                   selSessions.map((ss: any) =>
                     React.createElement('option', { key: ss.id, value: ss.id }, ss.title || ss.id.slice(0, 10))),
                 ))
-              : React.createElement('div', { className: 'dshcc-form-note' }, '对端暂未报告会话列表，消息将投递给其默认主 Agent。'),
+              : React.createElement('div', { className: 'dshcc-form-note' },
+                  (selPeer && selPeer.summary && Array.isArray(selPeer.summary.sessions))
+                    ? '对端当前没有打开的会话，消息将投递给其默认主 Agent。'
+                    : '对端插件版本较旧或尚未上报会话列表（等数秒或升级对端后重启），消息将投递给其默认主 Agent。'),
             React.createElement('textarea', {
               className: 'dshcc-textarea',
               placeholder: '输入消息内容',
@@ -634,7 +656,7 @@ export function apply(ctx: any) {
                 if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send();
               },
             }),
-            React.createElement('div', { className: 'dshcc-form-note' }, '消息将发送到所选会话的主 Agent 收件箱，并唤醒它开始新的对话。'),
+            React.createElement('div', { className: 'dshcc-form-note' }, '消息将发送到所选会话的主 Agent 收件箱，并唤醒它开始新的对话。对端离线时消息会自动排队，上线后补投。'),
             React.createElement('div', { style: { display: 'flex', justifyContent: 'flex-end' } },
               React.createElement('button', {
                 className: 'dshcc-btn dshcc-btn-primary',
@@ -658,6 +680,27 @@ export function apply(ctx: any) {
                   React.createElement('span', { style: { marginLeft: 'auto' } }, fmtTime(m.at))),
                 React.createElement('div', { className: 'dshcc-msg-body' }, m.content),
               ))),
+      ),
+
+      // ---------------- 离线队列 ----------------
+      Card('离线队列', React.createElement(ClockGlyph, { size: 15 }), CountPill((s && s.queue && s.queue.length) || 0),
+        (s && s.queue && s.queue.length > 0)
+          ? React.createElement('div', {},
+            React.createElement('div', { className: 'dshcc-form-note' }, '对端离线时消息暂存在这里，上线后自动补投。'),
+            s.queue.map((q: any) =>
+              React.createElement('div', { key: q.id, className: 'dshcc-row' },
+                React.createElement('div', {},
+                  React.createElement('div', { className: 'dshcc-peer-name' },
+                    React.createElement('span', { className: 'dshcc-dot dshcc-dot-offline' }),
+                    q.name),
+                  React.createElement('div', { className: 'dshcc-msg-body' }, (q.content || '').slice(0, 80))),
+                React.createElement('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+                  React.createElement('span', { className: 'dshcc-sub dshcc-nowrap' }, fmtTime(q.at)),
+                  React.createElement('button', {
+                    className: 'dshcc-btn dshcc-btn-danger',
+                    onClick: () => doApi('/dshcc/api/removeQueued', { id: q.id }),
+                  }, React.createElement(XGlyph, { size: 12 }), '移除')))))
+          : EmptyState(React.createElement(ClockGlyph, { size: 26 }), '队列为空。对端离线时发送的消息会自动进入这里。'),
       ),
 
       // ---------------- 已保存节点 ----------------

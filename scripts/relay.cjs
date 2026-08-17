@@ -54,21 +54,32 @@ wss.on('connection', (ws) => {
         version: typeof m.version === 'string' ? m.version.slice(0, 32) : '',
         compat: typeof m.compat === 'number' ? m.compat : 0,
       };
+      const isNew = !prev || prev.ws !== ws;
+      const changed = isNew ||
+        prev.name !== info.name ||
+        prev.version !== info.version ||
+        prev.compat !== info.compat ||
+        JSON.stringify(prev.summary || null) !== JSON.stringify(info.summary || null);
       clients.set(m.deviceId, Object.assign({ ws: ws }, info));
       ws.deviceId = m.deviceId;
       send(ws, { type: 'hello-ack' });
-      broadcastPresence(m.deviceId, info, true);
-      for (const [id, c] of clients) {
-        if (id === m.deviceId) continue;
-        send(ws, {
-          type: 'presence',
-          deviceId: id,
-          name: c.name,
-          summary: c.summary || null,
-          version: c.version || '',
-          compat: typeof c.compat === 'number' ? c.compat : 0,
-          joined: true,
-        });
+      // re-broadcast to others when identity/summary/version changed (the
+      // summary carries the session list — peers must learn updates, not
+      // only joins)
+      if (changed) broadcastPresence(m.deviceId, info, true);
+      if (isNew) {
+        for (const [id, c] of clients) {
+          if (id === m.deviceId) continue;
+          send(ws, {
+            type: 'presence',
+            deviceId: id,
+            name: c.name,
+            summary: c.summary || null,
+            version: c.version || '',
+            compat: typeof c.compat === 'number' ? c.compat : 0,
+            joined: true,
+          });
+        }
       }
       console.log('[relay] join', m.deviceId, name, 'v' + info.version, 'compat', info.compat, '| online:', clients.size);
       return;

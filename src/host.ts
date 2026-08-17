@@ -9,6 +9,8 @@
 import { fileURLToPath } from 'node:url';
 import z from '@deepseek-ai/schemastery';
 import { settingsNamespace } from '@deepseek-ai/dsh-settings';
+import { enqueueItem, removeItem, itemsFor, flushDevice, QUEUE_CAP } from './queue.js';
+import type { QueueItem } from './queue.js';
 
 export const name = 'dsh-cross-collaboration';
 
@@ -30,6 +32,14 @@ const SettingsSchema = z.object({
   pairs: z.array(z.object({ deviceId: z.string(), secret: z.string() })).default([]),
   // known mesh addresses; identity (deviceId/name) is learned at runtime
   peers: z.array(z.object({ address: z.string().default(''), source: z.string().default('manual') })).default([]),
+  // offline message queue: flushed when the target device comes back online
+  queue: z.array(z.object({
+    id: z.string().default(''),
+    deviceId: z.string().default(''),
+    sessionId: z.string().default(''),
+    content: z.string().default(''),
+    at: z.number().step(1).default(0),
+  })).default([]),
   // legacy field (kept for schema migration only)
   manualPeers: z.array(z.any()).default([]),
 });
@@ -161,6 +171,8 @@ export function apply(ctx: any, config: any) {
     peers: new Map<string, PeerRecord>(),
     knownPeers: new Map<string, { address: string; source: string }>(),
     messages: [] as ChatRecord[],
+    queue: [] as QueueItem[],
+    flushing: new Set<string>(),
     lastError: null as string | null,
     stderrText: '',
     pairs: new Map<string, string>(),
@@ -212,6 +224,19 @@ export function apply(ctx: any, config: any) {
         state.knownPeers.forEach((p) => list.push({ address: p.address, source: p.source }));
         persistSettingSafe({ peers: list, manualPeers: [] });
       }
+      if (current && Array.isArray(current.queue)) {
+        for (const q of current.queue) {
+          if (q && typeof q.id === 'string' && q.id && typeof q.deviceId === 'string' && q.deviceId && typeof q.content === 'string') {
+            state.queue = enqueueItem(state.queue, {
+              id: q.id,
+              deviceId: q.deviceId,
+              sessionId: typeof q.sessionId === 'string' && q.sessionId ? q.sessionId : undefined,
+              content: q.content,
+              at: typeof q.at === 'number' ? q.at : Date.now(),
+            });
+          }
+        }
+      }
       watchOff = settingsScope.watch((next: any) => {
         if (next && typeof next.deviceName === 'string' && next.deviceName) { state.deviceName = next.deviceName; broadcastSummary(true); }
         if (next && typeof next.workspaceLabel === 'string') { state.workspaceLabel = next.workspaceLabel; broadcastSummary(true); }
@@ -234,6 +259,22 @@ export function apply(ctx: any, config: any) {
           state.knownPeers = incoming;
           applyKnownPeersToGateway();
         }
+        if (next && Array.isArray(next.queue)) {
+          const incoming: QueueItem[] = [];
+          for (const q of next.queue) {
+            if (q && typeof q.id === 'string' && q.id && typeof q.deviceId === 'string' && q.deviceId && typeof q.content === 'string') {
+              incoming.push({
+                id: q.id,
+                deviceId: q.deviceId,
+                sessionId: typeof q.sessionId === 'string' && q.sessionId ? q.sessionId : undefined,
+                content: q.content,
+                at: typeof q.at === 'number' ? q.at : Date.now(),
+              });
+            }
+          }
+          const same = incoming.length === state.queue.length && incoming.every((q, i) => q.id === state.queue[i].id);
+          if (!same) state.queue = incoming;
+        }
       });
     } catch (err) {
       console.error('dshcc: settings register failed:', String((err as Error) && (err as Error).message));
@@ -250,6 +291,17 @@ export function apply(ctx: any, config: any) {
     const list: Array<{ address: string; source: string }> = [];
     state.knownPeers.forEach((p) => list.push({ address: p.address, source: p.source }));
     persistSettingSafe({ peers: list });
+  }
+
+  function persistQueue(): void {
+    const list: Array<{ id: string; deviceId: string; sessionId: string; content: string; at: number }> = [];
+    state.queue.forEach((q) => list.push({ id: q.id, deviceId: q.deviceId, sessionId: q.sessionId || '', content: q.content, at: q.at }));
+    persistSettingSafe({ queue: list });
+  }
+
+  function peerNameOf(deviceId: string): string {
+    const p = state.peers.get(deviceId);
+    return (p && p.name) || deviceId;
   }
 
   // ---------------- gateway ----------------
@@ -282,10 +334,13 @@ export function apply(ctx: any, config: any) {
       console.log('dshcc: gateway ready, rpc port', msg.rpcPort);
       broadcastSummary(true);
       applyKnownPeersToGateway();
+      flushAllQueued();
     } else if (msg.type === 'relay-status') {
       state.relayConnected = !!msg.connected;
+      if (msg.connected) flushAllQueued();
     } else if (msg.type === 'peer-up' && msg.peer) {
       state.peers.set(msg.peer.deviceId, msg.peer);
+      if (msg.peer.connected) flushQueueFor(msg.peer.deviceId);
     } else if (msg.type === 'peer-down') {
       state.peers.delete(msg.deviceId);
     } else if (msg.type === 'peers' && Array.isArray(msg.peers)) {
@@ -536,6 +591,7 @@ export function apply(ctx: any, config: any) {
     const text = String(content || '').trim().slice(0, 4000);
     if (!text) throw new Error('消息内容不能为空');
     let peer = findPeer(deviceId);
+    let direct = false;
     if (!peer && allowDirectAddress) {
       // one-shot delivery to a raw ip:port that is not in the registry yet
       const parsed = parseAddress(String(deviceId), rpcPort);
@@ -554,21 +610,89 @@ export function apply(ctx: any, config: any) {
           lastSeen: 0,
           firstSeen: Date.now(),
         };
+        direct = true;
       }
     }
     if (!peer) throw new Error('未找到设备：' + deviceId + '（可用 lan_peers 查看组网内设备）');
-    const res = await gatewayRpc(peer, 'msg.post', { content: text, sessionId: sessionId || undefined }, 15000);
-    state.messages.unshift({
-      dir: 'out',
-      peer: peer.deviceId,
-      name: peer.name,
-      content: text,
-      at: Date.now(),
-      sessionId: sessionId || '',
-      sessionTitle: '',
+    try {
+      const res = await gatewayRpc(peer, 'msg.post', { content: text, sessionId: sessionId || undefined }, 15000);
+      state.messages.unshift({
+        dir: 'out',
+        peer: peer.deviceId,
+        name: peer.name,
+        content: text,
+        at: Date.now(),
+        sessionId: sessionId || '',
+        sessionTitle: '',
+      });
+      if (state.messages.length > 50) state.messages.pop();
+      return { delivered: !!(res && res.delivered), summary: (res && res.summary) || null };
+    } catch (err) {
+      // direct one-shot to an unregistered address is not queueable: there is
+      // no tracked device identity to key the queue on
+      if (direct) throw err;
+      // known peer unreachable (offline / gateway down / timeout): queue it,
+      // it flushes automatically when the peer comes back online
+      const item: QueueItem = {
+        id: mintId('q'),
+        deviceId: peer.deviceId,
+        sessionId: sessionId || undefined,
+        content: text,
+        at: Date.now(),
+      };
+      state.queue = enqueueItem(state.queue, item);
+      persistQueue();
+      return { delivered: false, queued: true };
+    }
+  }
+
+  // ---------------- offline queue flush ----------------
+  function flushQueueFor(deviceId: string): void {
+    if (state.flushing.has(deviceId)) return;
+    if (itemsFor(state.queue, deviceId).length === 0) return;
+    state.flushing.add(deviceId);
+    flushDevice(state.queue, deviceId, async (item) => {
+      const peer = findPeer(item.deviceId);
+      if (!peer) return 'unreachable';
+      try {
+        const res = await gatewayRpc(peer, 'msg.post', { content: item.content, sessionId: item.sessionId || undefined }, 15000);
+        return res && res.delivered ? 'delivered' : 'unreachable';
+      } catch (err) {
+        const message = String((err as Error) && (err as Error).message);
+        if (message.indexOf('目标会话不存在') >= 0) return 'session-gone';
+        return 'unreachable';
+      }
+    }).then(({ remaining, delivered, dropped }) => {
+      state.queue = remaining;
+      if (delivered.length > 0 || dropped.length > 0) persistQueue();
+      for (const item of delivered) {
+        state.messages.unshift({
+          dir: 'out',
+          peer: item.deviceId,
+          name: peerNameOf(item.deviceId),
+          content: item.content,
+          at: item.at,
+          sessionId: item.sessionId || '',
+          sessionTitle: '',
+        });
+        if (state.messages.length > 50) state.messages.pop();
+        notifyMessage('离线队列', '已自动投递 ' + (item.content.slice(0, 40)));
+      }
+      for (const item of dropped) {
+        console.log('dshcc: dropped queued message (target session closed):', item.id);
+      }
+    }).catch((err) => {
+      console.error('dshcc: queue flush failed:', String((err as Error) && (err as Error).message));
+    }).finally(() => {
+      state.flushing.delete(deviceId);
     });
-    if (state.messages.length > 50) state.messages.pop();
-    return { delivered: !!(res && res.delivered), summary: (res && res.summary) || null };
+  }
+
+  function flushAllQueued(): void {
+    if (state.queue.length === 0) return;
+    const ids = new Set<string>();
+    for (const q of state.queue) ids.add(q.deviceId);
+    ids.forEach((id) => flushQueueFor(id));
   }
 
   // ---------------- gateway lifecycle ----------------
@@ -720,6 +844,14 @@ export function apply(ctx: any, config: any) {
       knownPeers: Array.from(state.knownPeers.values()),
       peers: peerList(),
       messages: state.messages,
+      queue: state.queue.map((q) => ({
+        id: q.id,
+        deviceId: q.deviceId,
+        name: peerNameOf(q.deviceId),
+        sessionId: q.sessionId || '',
+        content: q.content,
+        at: q.at,
+      })),
       now: Date.now(),
     };
   }
@@ -800,6 +932,13 @@ export function apply(ctx: any, config: any) {
       persistKnownPeers();
       return snapshot();
     });
+    postRoute('/dshcc/api/removeQueued', (body) => {
+      const id = String((body && body.id) || '').trim();
+      if (!id) throw new Error('id required');
+      state.queue = removeItem(state.queue, id);
+      persistQueue();
+      return snapshot();
+    });
     postRoute('/dshcc/api/pair', (body) => {
       const deviceId = String((body && body.deviceId) || '').trim();
       const secret = String((body && body.secret) || '').trim();
@@ -852,6 +991,9 @@ export function apply(ctx: any, config: any) {
         if (value.peers.length === 0) {
           lines.push('暂无节点。可用 lan_message 按 ip:port 直接发送到已知地址。');
         }
+        if (Array.isArray(value.queue) && value.queue.length > 0) {
+          lines.push('离线队列：' + value.queue.length + ' 条（对端上线后自动投递）');
+        }
         for (let i = 0; i < value.peers.length; i++) {
           const p = value.peers[i];
           const s = p.summary || {};
@@ -875,14 +1017,14 @@ export function apply(ctx: any, config: any) {
     },
     execute: async (args: any, exec: any) => {
       const snap = snapshot();
-      return { summary: snap.summary, rpcPort: snap.rpcPort, peers: snap.peers };
+      return { summary: snap.summary, rpcPort: snap.rpcPort, peers: snap.peers, queue: snap.queue };
     },
   });
 
   defineTool({
     name: 'lan_message',
     description:
-      'Send a message to a specific main agent on another device in the cross-device mesh. Identify the device by deviceId, device name, or ip:port (a bare ip:port works even when the address is not in the registry yet). Identify the target SESSION (one session = one main agent in DSH) by its session id via the optional "session" parameter — get session ids from lan_peers; omit "session" to address that device\'s first/only main agent. The message lands in the target agent\'s inbox and wakes it. Empty messages are rejected, content beyond 4000 chars is truncated, and sending to an offline peer fails immediately (no queueing). This is the ONLY cross-device operation: pure communication.',
+      'Send a message to a specific main agent on another device in the cross-device mesh. Identify the device by deviceId, device name, or ip:port (a bare ip:port works even when the address is not in the registry yet). Identify the target SESSION (one session = one main agent in DSH) by its session id via the optional "session" parameter — get session ids from lan_peers; omit "session" to address that device\'s first/only main agent. The message lands in the target agent\'s inbox and wakes it. Empty messages are rejected and content beyond 4000 chars is truncated. If the target device is offline, the message is queued and delivered automatically when it comes back online (queued messages to a closed session are dropped). This is the ONLY cross-device operation: pure communication.',
     parameters: {
       type: 'object',
       properties: {
@@ -897,6 +1039,7 @@ export function apply(ctx: any, config: any) {
       schema: { type: 'object', additionalProperties: true },
       render(args: unknown, value: any) {
         if (!value.ok) return [{ type: 'text', text: '发送失败：' + value.error }];
+        if (value.queued) return [{ type: 'text', text: '已排队：对端离线，上线后将自动投递（' + value.peer + '）' }];
         return [{ type: 'text', text: '已送达 ' + value.peer + (value.session ? '（会话 ' + value.session + '）' : '') }];
       },
     },
@@ -907,7 +1050,13 @@ export function apply(ctx: any, config: any) {
       try {
         // allowDirectAddress: a bare ip:port that is not registered yet is attempted once
         const res = await sendMessageTo(String(args.peer), content, true, sessionId);
-        return { ok: true, peer: String(args.peer), session: sessionId || '', delivered: res.delivered };
+        return {
+          ok: true,
+          peer: String(args.peer),
+          session: sessionId || '',
+          delivered: !!res.delivered,
+          queued: !!res.queued,
+        };
       } catch (err) {
         return { ok: false, error: String((err as Error) && (err as Error).message) };
       }
@@ -967,8 +1116,16 @@ export function apply(ctx: any, config: any) {
   })();
   refreshWorkspaces();
   const workspacesTimer = ctx.interval(() => { refreshWorkspaces(); }, 30000);
+  // the summary carries the session list (one session = one main agent);
+  // re-broadcast periodically so peers learn session open/close changes
+  const summaryTimer = ctx.interval(() => { broadcastSummary(true); }, 10000);
+  // periodic retry for queued offline messages (peer-up events already flush
+  // immediately; this catches stale connected flags)
+  const queueTimer = ctx.interval(() => { flushAllQueued(); }, 15000);
   ctx.effect(() => () => {
     workspacesTimer();
+    summaryTimer();
+    queueTimer();
     for (const t of notifTimers) { try { t(); } catch (e) {} }
     notifTimers.clear();
     if (watchOff) { try { watchOff(); } catch (e) {} }

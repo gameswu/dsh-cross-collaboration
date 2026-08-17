@@ -365,9 +365,15 @@ socket.on('message', (msg, rinfo) => {
     lastSeen: Date.now(),
     firstSeen: (prev && prev.firstSeen) || Date.now(),
   };
+  const changed = !prev ||
+    prev.name !== peer.name ||
+    prev.connected !== peer.connected ||
+    prev.version !== peer.version ||
+    prev.compat !== peer.compat ||
+    JSON.stringify(prev.summary || null) !== JSON.stringify(peer.summary || null);
   peers.set(m.deviceId, peer);
   addressIndex.set(key, m.deviceId);
-  if (!prev) emitPeerUp(peer);
+  if (changed) emitPeerUp(peer);
 });
 
 socket.bind(udpPort, () => {
@@ -529,7 +535,10 @@ function relayConnect() {
           firstSeen: prev ? prev.firstSeen : Date.now(),
         };
         peers.set(m.deviceId, peer);
-        if (!prev || !prev.relay || prev.name !== peer.name) emitPeerUp(peer);
+        const changed = !prev || !prev.relay || prev.name !== peer.name ||
+          prev.version !== peer.version || prev.compat !== peer.compat ||
+          JSON.stringify(prev.summary || null) !== JSON.stringify(peer.summary || null);
+        if (changed) emitPeerUp(peer);
       } else {
         const prev = peers.get(m.deviceId);
         if (prev && prev.relay) dropPeer(m.deviceId);
