@@ -38,6 +38,7 @@ const state = {
   aSeesC: false,                   // step 2
   bSeesC: false, cSeesB: false,   // step 3 (gossip)
   msgOk: false,                    // step 4
+  compatOk: false,                 // version/compat exchange
 };
 let finished = false;
 let step2Sent = false;
@@ -75,7 +76,9 @@ function attach(child, which) {
       } else if (msg.type === 'peer-up' && msg.peer) {
         console.log('  [' + which + '] peer-up:', msg.peer.name, msg.peer.deviceId,
           '@ ' + (msg.peer.address || 'relay') + ':' + msg.peer.rpcPort,
-          'src=' + msg.peer.source, 'connected=' + msg.peer.connected);
+          'src=' + msg.peer.source, 'connected=' + msg.peer.connected,
+          'version=' + msg.peer.version, 'compat=' + msg.peer.compat);
+        if (msg.peer.compat === 1 && typeof msg.peer.version === 'string' && msg.peer.version) state.compatOk = true;
         if (which === 'a' && msg.peer.deviceId === idB && msg.peer.connected) state.aSeesB = true;
         if (which === 'b' && msg.peer.deviceId === idA && msg.peer.connected) state.bSeesA = true;
         if (which === 'a' && msg.peer.deviceId === idC && msg.peer.connected) state.aSeesC = true;
@@ -107,9 +110,9 @@ function attach(child, which) {
         b.stdin.write(JSON.stringify({ cmd: 'rpc', id: 'msg-test', address: C.host, port: C.rpc, method: 'msg.post', params: { content: 'hello from B' }, timeoutMs: 8000 }) + '\n');
       }
 
-      if (state.aSeesB && state.bSeesA && state.aSeesC && state.bSeesC && state.cSeesB && state.msgOk) {
+      if (state.aSeesB && state.bSeesA && state.aSeesC && state.bSeesC && state.cSeesB && state.msgOk && state.compatOk) {
         clearTimeout(deadline);
-        finish(0, 'ip:port add + mesh gossip + msg.post verified (' + idA + ' <-> ' + idB + ' <-> ' + idC + ')');
+        finish(0, 'ip:port add + mesh gossip + version/compat exchange + msg.post verified (' + idA + ' <-> ' + idB + ' <-> ' + idC + ')');
       }
     }
   });

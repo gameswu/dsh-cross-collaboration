@@ -9,7 +9,7 @@ const { WebSocketServer } = require('ws');
 const port = Number(process.argv[2] || 8799);
 const wss = new WebSocketServer({ port: port, host: '0.0.0.0' });
 
-/** deviceId -> { ws, name } */
+/** deviceId -> { ws, name, version, compat } */
 const clients = new Map();
 
 function send(ws, obj) {
@@ -18,10 +18,18 @@ function send(ws, obj) {
   }
 }
 
-function broadcastPresence(deviceId, name, joined) {
+function broadcastPresence(deviceId, info, joined) {
   for (const [id, c] of clients) {
     if (id === deviceId) continue;
-    send(c.ws, { type: 'presence', deviceId: deviceId, name: name, joined: joined });
+    send(c.ws, {
+      type: 'presence',
+      deviceId: deviceId,
+      name: info.name,
+      summary: info.summary || null,
+      version: info.version || '',
+      compat: typeof info.compat === 'number' ? info.compat : 0,
+      joined: joined,
+    });
   }
 }
 
@@ -37,18 +45,32 @@ wss.on('connection', (ws) => {
       if (prev && prev.ws !== ws) {
         try { prev.ws.close(); } catch (e) {}
         clients.delete(m.deviceId);
-        broadcastPresence(m.deviceId, m.deviceName || m.deviceId, false);
+        broadcastPresence(m.deviceId, prev, false);
       }
       const name = String(m.deviceName || m.deviceId).slice(0, 64);
-      clients.set(m.deviceId, { ws: ws, name: name });
+      const info = {
+        name: name,
+        summary: m.summary || null,
+        version: typeof m.version === 'string' ? m.version.slice(0, 32) : '',
+        compat: typeof m.compat === 'number' ? m.compat : 0,
+      };
+      clients.set(m.deviceId, Object.assign({ ws: ws }, info));
       ws.deviceId = m.deviceId;
       send(ws, { type: 'hello-ack' });
-      broadcastPresence(m.deviceId, name, true);
+      broadcastPresence(m.deviceId, info, true);
       for (const [id, c] of clients) {
         if (id === m.deviceId) continue;
-        send(ws, { type: 'presence', deviceId: id, name: c.name, joined: true });
+        send(ws, {
+          type: 'presence',
+          deviceId: id,
+          name: c.name,
+          summary: c.summary || null,
+          version: c.version || '',
+          compat: typeof c.compat === 'number' ? c.compat : 0,
+          joined: true,
+        });
       }
-      console.log('[relay] join', m.deviceId, name, '| online:', clients.size);
+      console.log('[relay] join', m.deviceId, name, 'v' + info.version, 'compat', info.compat, '| online:', clients.size);
       return;
     }
 

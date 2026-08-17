@@ -10,7 +10,7 @@
 //   - no agent work status anywhere; summary is identity only
 //   - relay adapter: WebSocket client to a relay hub; presence discovery +
 //     AES-256-GCM encrypted envelopes for paired peers (E2E)
-// argv: node -e <this script> <deviceId> <udpPort> <deviceName> <beaconMs> [rpcPort] [relayUrl]
+// argv: node -e <this script> <deviceId> <udpPort> <deviceName> <beaconMs> [rpcPort] [relayUrl] [pluginVersion]
 // Protocol: JSON lines on stdout (events up), JSON lines on stdin (commands down).
 // NOTE: no template literals / no ${ inside this file (kept simple for embedding).
 
@@ -19,12 +19,18 @@ const http = require('http');
 const os = require('os');
 const crypto = require('crypto');
 
+// Wire-protocol compatibility number: bumped ONLY when a breaking change lands.
+// Peers exchange it via beacon/hello; a peer with a different number is flagged
+// as incompatible in the UI and in lan_peers (messaging still attempts).
+const COMPAT = 1;
+
 const deviceId = process.argv[1] || 'gw-' + Math.random().toString(36).slice(2, 8);
 const udpPort = parseInt(process.argv[2] || '45231', 10);
 let deviceName = process.argv[3] || '';
 const beaconMs = parseInt(process.argv[4] || '3000', 10);
 const rpcPort = parseInt(process.argv[5] || String(udpPort + 1), 10);
 const relayUrl = process.argv[6] || '';
+const pluginVersion = process.argv[7] || '0.1.0';
 let selfSummary = null;
 
 function send(obj) {
@@ -164,7 +170,7 @@ function exportPeerList() {
 }
 
 function helloPayload() {
-  return { v: 1, deviceId: deviceId, deviceName: deviceName, rpcPort: rpcPort, summary: selfSummary, peers: exportPeerList() };
+  return { v: 1, deviceId: deviceId, deviceName: deviceName, rpcPort: rpcPort, summary: selfSummary, version: pluginVersion, compat: COMPAT, peers: exportPeerList() };
 }
 
 // ---------------- outbound rpc correlation ----------------
@@ -238,6 +244,8 @@ function mergeHello(address, info) {
     source: source,
     connected: true,
     summary: info.summary || null,
+    version: typeof info.version === 'string' ? info.version : '',
+    compat: typeof info.compat === 'number' ? info.compat : 0,
     lastSeen: Date.now(),
     firstSeen: (prev && prev.firstSeen) || Date.now(),
   };
@@ -352,6 +360,8 @@ socket.on('message', (msg, rinfo) => {
     source: (prev && prev.source) || 'lan',
     connected: true,
     summary: m.summary || null,
+    version: typeof m.version === 'string' ? m.version : '',
+    compat: typeof m.compat === 'number' ? m.compat : 0,
     lastSeen: Date.now(),
     firstSeen: (prev && prev.firstSeen) || Date.now(),
   };
@@ -362,11 +372,11 @@ socket.on('message', (msg, rinfo) => {
 
 socket.bind(udpPort, () => {
   socket.setBroadcast(true);
-  send({ type: 'gateway-ready', deviceId: deviceId, deviceName: deviceName, udpPort: udpPort, rpcPort: rpcPort, address: ownAddress(), addresses: ownAddresses() });
+  send({ type: 'gateway-ready', deviceId: deviceId, deviceName: deviceName, udpPort: udpPort, rpcPort: rpcPort, address: ownAddress(), addresses: ownAddresses(), version: pluginVersion, compat: COMPAT });
 });
 
 function beacon() {
-  const msg = JSON.stringify({ v: 1, t: 'beacon', deviceId: deviceId, deviceName: deviceName, udpPort: udpPort, rpcPort: rpcPort, summary: selfSummary });
+  const msg = JSON.stringify({ v: 1, t: 'beacon', deviceId: deviceId, deviceName: deviceName, udpPort: udpPort, rpcPort: rpcPort, summary: selfSummary, version: pluginVersion, compat: COMPAT });
   socket.send(msg, udpPort, '255.255.255.255');
 }
 setInterval(beacon, beaconMs);
@@ -463,7 +473,7 @@ let relayConnected = false;
 
 function relayHello() {
   if (relayWs && relayWs.readyState === 1) {
-    relayWs.send(JSON.stringify({ type: 'hello', deviceId: deviceId, deviceName: deviceName, summary: selfSummary }));
+    relayWs.send(JSON.stringify({ type: 'hello', deviceId: deviceId, deviceName: deviceName, summary: selfSummary, version: pluginVersion, compat: COMPAT }));
   }
 }
 
@@ -513,6 +523,8 @@ function relayConnect() {
           source: 'relay',
           connected: true,
           summary: m.summary || null,
+          version: typeof m.version === 'string' ? m.version : '',
+          compat: typeof m.compat === 'number' ? m.compat : 0,
           lastSeen: Date.now(),
           firstSeen: prev ? prev.firstSeen : Date.now(),
         };

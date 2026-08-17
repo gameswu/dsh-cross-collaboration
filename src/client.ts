@@ -318,6 +318,7 @@ export function apply(ctx: any) {
 .dshcc-chip-btn { cursor: pointer; }
 .dshcc-chip-btn:hover { color: var(--dsw-alias-text-primary); border-color: var(--dsw-alias-brand-primary); }
 .dshcc-chip-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.dshcc-chip-warn { color: #e0b64c; border-color: #e0b64c; }
 .dshcc-btn {
   appearance: none; border: 1px solid var(--dsw-alias-line-stroke);
   background: var(--dsw-alias-button-bg-default); color: var(--dsw-alias-button-text-default);
@@ -500,6 +501,10 @@ export function apply(ctx: any) {
           React.createElement('span', { className: 'k' }, '端口'),
           React.createElement('span', { className: 'v dshcc-mono' }, s ? s.rpcPort : '-')),
         React.createElement('div', { className: 'dshcc-kv' },
+          React.createElement('span', { className: 'k' }, '插件版本'),
+          React.createElement('span', { className: 'v dshcc-mono' },
+            (s && s.pluginVersion ? s.pluginVersion : '-') + (s && s.protocolCompat ? ' · 协议 v' + s.protocolCompat : ''))),
+        React.createElement('div', { className: 'dshcc-kv' },
           React.createElement('span', { className: 'k' }, '中继'),
           React.createElement('span', {
             className: 'v dshcc-status-row' + (s && s.relayUrl ? (s.relayConnected ? ' dshcc-status-online' : ' dshcc-status-warn') : ''),
@@ -592,6 +597,9 @@ export function apply(ctx: any) {
                     ps.workspace ? React.createElement('span', { className: 'dshcc-chip' }, React.createElement(FolderGlyph, { size: 11 }), ' ' + ps.workspace) : null,
                     (Array.isArray(ps.sessions) && ps.sessions.length > 0)
                       ? React.createElement('span', { className: 'dshcc-chip' }, ps.sessions.length + ' 个会话')
+                      : null,
+                    p.compatible === false
+                      ? React.createElement('span', { className: 'dshcc-chip dshcc-chip-warn', title: p.version ? '对端插件版本 v' + p.version + '，协议 v' + p.compat + '，与本机不兼容' : '对端协议与本机不兼容' }, '⚠ 版本不兼容')
                       : null,
                     React.createElement('span', { className: 'dshcc-chip' }, SOURCE_LABEL[p.source] || p.source))),
                 React.createElement('span', { className: p.connected ? 'dshcc-status-online dshcc-nowrap' : 'dshcc-status-offline dshcc-nowrap' }, p.connected ? '在线' : '离线'),

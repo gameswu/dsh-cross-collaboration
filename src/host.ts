@@ -35,7 +35,13 @@ const SettingsSchema = z.object({
 });
 
 const GATEWAY_SOURCE_PATH = fileURLToPath(new URL('./gateway.js', import.meta.url));
+const PACKAGE_JSON_PATH = fileURLToPath(new URL('./package.json', import.meta.url));
 const NODE_CANDIDATES = ['node', '/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node', '/usr/local/opt/node/bin/node'];
+
+// Wire-protocol compatibility number — bumped ONLY on breaking wire changes.
+// Exchanged with peers so each side can check whether plugins can interoperate.
+const PROTOCOL_COMPAT = 1;
+const FALLBACK_VERSION = '0.1.0';
 
 function mintId(prefix: string): string {
   return prefix + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
@@ -113,6 +119,8 @@ interface PeerRecord {
   source: string;
   connected: boolean;
   summary: Record<string, unknown> | null;
+  version?: string;
+  compat?: number;
   lastSeen: number;
   firstSeen: number;
 }
@@ -145,6 +153,7 @@ export function apply(ctx: any, config: any) {
     deviceId: 'dshcc-' + Math.random().toString(36).slice(2, 10),
     deviceName: (typeof cfg.deviceName === 'string' && cfg.deviceName) || 'dsh-' + Math.random().toString(36).slice(2, 6),
     workspaceLabel: '',
+    pluginVersion: FALLBACK_VERSION,
     ownAddress: '',
     ownAddresses: [] as string[],
     workspaces: [] as Array<{ title: string; path: string }>,
@@ -604,7 +613,7 @@ export function apply(ctx: any, config: any) {
     const sandboxPolicy = ctx.get('sandboxPolicy') as any;
     const cwd = (sandboxPolicy && typeof sandboxPolicy.workspaceRoot === 'string' && sandboxPolicy.workspaceRoot) || '.';
     const handle = subprocess.spawn({
-      argv: [nodePath, '-e', gatewaySource, state.deviceId, String(udpPort), state.deviceName, String(beaconMs), String(rpcPort), relayUrl],
+      argv: [nodePath, '-e', gatewaySource, state.deviceId, String(udpPort), state.deviceName, String(beaconMs), String(rpcPort), relayUrl, state.pluginVersion],
       cwd: cwd,
       stdio: {
         stdin: 'pipe',
@@ -658,6 +667,7 @@ export function apply(ctx: any, config: any) {
     const now = Date.now();
     const out: Array<Record<string, unknown>> = [];
     state.peers.forEach((p) => {
+      const compat = typeof p.compat === 'number' ? p.compat : 0;
       out.push({
         deviceId: p.deviceId,
         name: p.name,
@@ -668,6 +678,10 @@ export function apply(ctx: any, config: any) {
         source: p.source,
         connected: !!p.connected,
         summary: p.summary || null,
+        version: typeof p.version === 'string' ? p.version : '',
+        compat: compat,
+        // compat 0 = unknown (pre-version-check peers); null = unknown to the UI
+        compatible: compat === 0 ? null : compat === PROTOCOL_COMPAT,
         ageMs: now - p.lastSeen,
       });
     });
@@ -689,6 +703,8 @@ export function apply(ctx: any, config: any) {
       customWorkspace: state.workspaceLabel,
       detectedWorkspace: state.detectedWorkspace,
       workspaces: state.workspaces,
+      pluginVersion: state.pluginVersion,
+      protocolCompat: PROTOCOL_COMPAT,
       ownAddress: state.ownAddress,
       ownAddresses: state.ownAddresses,
       summary: buildSummary(),
@@ -843,7 +859,10 @@ export function apply(ctx: any, config: any) {
             ' · ' + (p.address ? p.address + ':' + p.rpcPort : '中继') +
             ' · 工作区 ' + (s.workspace || '未设置') +
             ' · ' + (p.connected ? '在线' : '离线') +
-            ' · 来源：' + p.source);
+            ' · 来源：' + p.source +
+            (p.version ? ' · 插件 v' + p.version : '') +
+            (p.compat ? ' · 协议 v' + p.compat : '') +
+            (p.compatible === false ? ' ⚠ 版本不兼容' : ''));
           const ps = Array.isArray(s.sessions) ? s.sessions : [];
           if (ps.length > 0) {
             for (let j = 0; j < ps.length; j++) {
@@ -933,7 +952,19 @@ export function apply(ctx: any, config: any) {
   tryRegisterNotifFrame();
 
   // ---------------- lifecycle ----------------
-  startGateway();
+  // read the package version once (single source of truth: package.json);
+  // the gateway advertises it together with PROTOCOL_COMPAT for peer checks
+  (async () => {
+    const fsForVersion = ctx.get('fs') as any;
+    if (fsForVersion && typeof fsForVersion.readText === 'function') {
+      try {
+        const raw = await fsForVersion.readText(await fsForVersion.resolve(PACKAGE_JSON_PATH));
+        const pkg = JSON.parse(raw);
+        if (pkg && typeof pkg.version === 'string' && pkg.version) state.pluginVersion = pkg.version;
+      } catch (e) {}
+    }
+    startGateway();
+  })();
   refreshWorkspaces();
   const workspacesTimer = ctx.interval(() => { refreshWorkspaces(); }, 30000);
   ctx.effect(() => () => {
