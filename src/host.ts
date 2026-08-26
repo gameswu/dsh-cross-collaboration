@@ -45,7 +45,7 @@ const SettingsSchema = z.object({
 });
 
 const GATEWAY_SOURCE_PATH = fileURLToPath(new URL('./gateway.js', import.meta.url));
-const PACKAGE_JSON_PATH = fileURLToPath(new URL('./package.json', import.meta.url));
+const PACKAGE_JSON_PATH = fileURLToPath(new URL('../package.json', import.meta.url));
 const NODE_CANDIDATES = ['node', '/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node', '/usr/local/opt/node/bin/node'];
 
 // Wire-protocol compatibility number — bumped ONLY on breaking wire changes.
@@ -307,8 +307,8 @@ export function apply(ctx: any, config: any) {
   // ---------------- gateway ----------------
   function gatewaySend(obj: unknown): void {
     const handle = state.handle;
-    if (handle && handle.stdin && handle.stdin.writable) {
-      handle.stdin.write(JSON.stringify(obj) + '\n');
+    if (handle && handle.stdin && handle.stdin.writable && !handle.stdin.destroyed) {
+      try { handle.stdin.write(JSON.stringify(obj) + '\n'); } catch (e) {}
     }
   }
 
@@ -417,7 +417,7 @@ export function apply(ctx: any, config: any) {
       const roots = agents.roots() as any[];
       for (const r of roots) {
         if (!r) continue;
-        const id = typeof r.sessionId === 'string' ? r.sessionId : '';
+        const id = typeof r.sessionId === 'string' ? r.sessionId : (r.session && typeof r.session.id === 'string' ? String(r.session.id) : '');
         if (!id) continue;
         let title = '';
         try {
@@ -747,6 +747,11 @@ export function apply(ctx: any, config: any) {
       graceMs: 2000,
     });
     state.handle = handle;
+    if (handle.stdin) {
+      handle.stdin.on('error', (err: any) => {
+        if (err && err.code !== 'EPIPE') state.lastError = 'gateway stdin: ' + String(err && err.message);
+      });
+    }
     applyPairsToGateway();
 
     let outBuf = '';
