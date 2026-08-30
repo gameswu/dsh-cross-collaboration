@@ -989,9 +989,10 @@ export function apply(ctx: any, config: any) {
     name: 'lan_peers',
     description:
       'List devices in this cross-device mesh (added by ip:port, auto-discovered on LAN, or learned via gossip), with their identity summaries (device name, workspace label), connection state, and the SESSIONS each device hosts. In DSH one session is one main agent — use the session ids listed here to pick the exact target for lan_message.',
-    // DSH 0.1.2+ tool DSL: `parameters` is a property map (per-property
-    // `required: true`), not an explicit JSON-schema object root.
-    parameters: {},
+    // Raw ctx.tools.register() forwards `parameters` to the wire verbatim, so it
+    // must be an explicit root JSON Schema (type:'object'). The property-map DSL
+    // is only accepted by defineTool() from @deepseek-ai/dsh-tools, which compiles it.
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
     output: {
       schema: { type: 'object', additionalProperties: true },
       render(args: unknown, value: any) {
@@ -1045,9 +1046,14 @@ export function apply(ctx: any, config: any) {
     description:
       'Send a message to a specific main agent on another device in the cross-device mesh. Identify the device by deviceId, device name, or ip:port (a bare ip:port works even when the address is not in the registry yet). Identify the target SESSION (one session = one main agent in DSH) by its session id via the optional "session" parameter — get session ids from lan_peers; omit "session" to address that device\'s first/only main agent. The message lands in the target agent\'s inbox and wakes it. Empty messages are rejected and content beyond 4000 chars is truncated. If the target device is offline, the message is queued and delivered automatically when it comes back online (queued messages to a closed session are dropped). This is the ONLY cross-device operation: pure communication.',
     parameters: {
-      peer: { type: 'string', description: 'deviceId, device name, or ip:port of the target peer', required: true },
-      session: { type: 'string', description: 'optional target session id (from lan_peers); omit for the device\'s default main agent' },
-      content: { type: 'string', description: 'message text (max 4000 chars)', required: true },
+      type: 'object',
+      properties: {
+        peer: { type: 'string', description: 'deviceId, device name, or ip:port of the target peer' },
+        session: { type: 'string', description: 'optional target session id (from lan_peers); omit for the device\'s default main agent' },
+        content: { type: 'string', description: 'message text (max 4000 chars)' },
+      },
+      required: ['peer', 'content'],
+      additionalProperties: false,
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
