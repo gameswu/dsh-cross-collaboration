@@ -2,6 +2,27 @@
  * Ambient declarations for the dynamic Cordis plugin execution environment.
  * These globals are provided by the DSH harness at runtime (Host and Client);
  * this file is the compile-time contract, derived from the Inspect catalogs.
+ *
+ * Updated for DSH 0.1.2-alpha.2 (breaking-change migration):
+ *  - tool schemas: `parameters` is now a per-property map DSL
+ *    (requiredness per property via `required: true`), not a JSON-schema
+ *    object root
+ *  - ctx.agents: roots()/get() return live Agents carrying `id` (the
+ *    session id) and `session` (dsh-session Session) — no `sessionId` field
+ *  - session creation metadata lives on `session.header.cwd`, not
+ *    `session.meta.cwd`
+ *  - ctx.workspaceRegistry.list() is synchronous; resolveByPath() resolves a
+ *    Workspace whose `title`/`path` are the display facts
+ *  - subprocess collect-mode ({maxBytes}) streams are exposed as
+ *    offset-based readers on `handle.collected`, NOT as raw streams —
+ *    raw `stderr` exists only for `stderr: 'pipe'`
+ *  - ctx.webRuntime is gone: the host webserver has no origin policy of its
+ *    own and each route owner enforces its own
+ *  - ctx.settings.register(namespace, schema) → SettingsScope with
+ *    get()/watch()/update() (update is async); namespaces are plain
+ *    lowercase-hyphenated literals (the settingsNamespace() helper is gone)
+ *  - browser kernel: `slots` service is provided by dsh-client-ui-renderer,
+ *    `timer` by dsh-cordis-client-runner (ClientTimerService)
  */
 
 declare const console: {
@@ -9,7 +30,7 @@ declare const console: {
   error(...values: unknown[]): void;
 };
 
-/** Node child-process script only (src/ts/gateway.ts, runs as `node -e`). */
+/** Node child-process script only (src/gateway.ts, runs as `node -e`). */
 declare const require: (id: string) => any;
 declare const process: {
   argv: string[];
@@ -52,7 +73,7 @@ declare const styles: {
 
 /* ---------------- tool schema DSL (unified ValueSchemaSpec) ---------------- */
 
-interface ValueSchemaBase {
+interface ValueSchemaAnnotations {
   description?: string;
   title?: string;
   default?: unknown;
@@ -60,23 +81,24 @@ interface ValueSchemaBase {
 }
 
 type ValueSchema =
-  | (ValueSchemaBase & { type: 'string'; enum?: readonly string[]; const?: string })
-  | (ValueSchemaBase & { type: 'number' })
-  | (ValueSchemaBase & { type: 'integer' })
-  | (ValueSchemaBase & { type: 'boolean' })
-  | (ValueSchemaBase & { type: 'null' })
-  | (ValueSchemaBase & { type: 'array'; items?: ValueSchema })
-  | (ValueSchemaBase & { type: 'object'; properties?: Record<string, ValueSchema>; additionalProperties?: boolean })
-  | (ValueSchemaBase & { type: 'json' })
-  | (ValueSchemaBase & { oneOf: readonly ValueSchema[] });
+  | (ValueSchemaAnnotations & { type: 'string'; enum?: readonly string[]; const?: string })
+  | (ValueSchemaAnnotations & { type: 'number' })
+  | (ValueSchemaAnnotations & { type: 'integer' })
+  | (ValueSchemaAnnotations & { type: 'boolean' })
+  | (ValueSchemaAnnotations & { type: 'null' })
+  | (ValueSchemaAnnotations & { type: 'array'; items?: ValueSchema })
+  | (ValueSchemaAnnotations & { type: 'object'; properties?: ParameterSchema; additionalProperties: boolean })
+  | (ValueSchemaAnnotations & { type: 'json' })
+  | (ValueSchemaAnnotations & { oneOf: readonly [ValueSchema, ValueSchema, ...ValueSchema[]] });
 
-interface ParameterSchema {
-  type?: 'object';
-  properties?: Record<string, ValueSchema>;
-  /** raw object root: array of declared property names */
-  required?: readonly string[];
-  additionalProperties?: boolean;
-}
+/**
+ * Tool parameter schema (DSH 0.1.2+): a per-property map over an implicit
+ * open object root. Requiredness is the per-property `required: true`
+ * annotation — there is no top-level `required`/`additionalProperties`.
+ */
+type ParameterSchema = {
+  [name: string]: ValueSchema & { required?: true };
+};
 
 interface ContentBlock {
   type: string;
@@ -105,21 +127,33 @@ interface SubprocessOutcome {
 }
 
 interface SubprocessHandle {
-  stdin?: { writable: boolean; write(data: string): void };
+  stdin?: {
+    writable: boolean;
+    write(data: string): void;
+    on(event: string, listener: (...args: any[]) => void): void;
+  };
+  /** raw stream — present ONLY when spawned with stdout: 'pipe' */
   stdout?: {
     setEncoding(enc: string): void;
     on(event: string, listener: (...args: any[]) => void): void;
   };
+  /** raw stream — present ONLY when spawned with stderr: 'pipe' */
   stderr?: {
     setEncoding(enc: string): void;
     on(event: string, listener: (...args: any[]) => void): void;
   };
+  /** offset-based readers for collect-mode streams ({maxBytes}) */
+  collected?: {
+    stdout?: { readFrom(offset: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string } };
+    stderr?: { readFrom(offset: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string } };
+  };
   done: Promise<SubprocessOutcome>;
   terminate(): void;
+  waitForExit(signal?: { aborted: boolean }): Promise<boolean>;
 }
 
 interface SubprocessService {
-  resolveExecutable(command: string): Promise<string>;
+  resolveExecutable(command: string, env?: Record<string, string>, signal?: { aborted: boolean }): Promise<string>;
   spawn(spec: {
     argv: readonly string[];
     cwd: string;
@@ -129,31 +163,41 @@ interface SubprocessService {
       stderr: 'pipe' | 'inherit' | { maxBytes: number };
     };
     graceMs: number;
+    signal?: { aborted: boolean };
+    env?: Record<string, string | undefined>;
   }): SubprocessHandle;
 }
 
 interface FsService {
-  resolve(path: string, opts?: { cwd?: string }): Promise<unknown>;
+  resolve(path: string, opts?: { cwd?: string; signal?: { aborted: boolean } }): Promise<unknown>;
   readText(target: unknown): Promise<string>;
+  processPath(target: unknown): string;
 }
 
 interface SandboxPolicyService {
   workspaceRoot?: string;
 }
 
-interface RemoteAgent {
+/** DSH 0.1.2+ live Agent (dsh-agent-loop face): id IS the session id. */
+interface LiveAgent {
   id: string;
-  options?: { provider?: string; model?: string };
+  session: {
+    id: string;
+    header?: { cwd?: string };
+  };
   followup(message: unknown): void;
   whenIdle(): Promise<void>;
 }
 
 interface AgentHandle {
-  agent: RemoteAgent;
+  agent: LiveAgent;
   dispose(): Promise<void>;
 }
 
 interface AgentsService {
+  roots(): LiveAgent[];
+  list(): LiveAgent[];
+  get(sessionId: string): LiveAgent | undefined;
   create(options: {
     sessionId: string;
     meta?: {
@@ -169,25 +213,10 @@ interface AgentsService {
   }): Promise<AgentHandle>;
 }
 
-interface SessionQueryService {
-  readSession(sessionId: string): Promise<{ events: Array<Record<string, any>> }>;
-}
-
-interface SubagentsService {
-  registerProvider(provider: unknown): () => void;
-}
-
 interface WorkspaceRegistryService {
-  list(): Promise<Array<{ path?: string }>>;
-}
-
-interface AgentDefaultModelService {
-  currentSelection(): { provider?: string; model?: string } | undefined;
-}
-
-interface SystemPromptService {
-  section(section: { name: string; order: number; text: string }): () => void;
-  variable(name: string, provider: (context: any) => string | undefined): () => void;
+  /** synchronous ordered projection (DSH 0.1.2+) */
+  list(): Array<{ title?: string; path?: string }>;
+  resolveByPath(path: string): Promise<{ title?: string; path?: string } | undefined>;
 }
 
 interface NotificationFrameService {

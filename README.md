@@ -2,6 +2,8 @@
 
 让多台运行 [DSH](https://github.com/deepseek-ai/dsh)（DeepSeek Harness）的设备互相发现、互相**发消息唤醒对方的主 Agent**。
 
+> 兼容性：v0.2.0 起要求 **DSH ≥ 0.1.2-alpha.2**（该版本引入了大量破坏性变更，插件已按新服务契约适配：`ctx.agents`/`ctx.settings`/`ctx.workspaceRegistry`/`ctx.tools` 新 API、新工具参数 DSL、subprocess 新 stdio 语义等）。
+
 - **发现**：同一局域网零配置自动互发现；跨网段按 `ip:port` 手动添加（Minecraft 联机式）；添加的节点会通过组网自动同步给其他设备
 - **通信**：唯一的跨设备操作就是发消息。**粒度是会话**——在 DSH 里一个会话就是一个主 Agent，不存在 workspace 级 Agent；消息可以精确投递给对端设备上的指定会话（不指定则投给其默认主 Agent），不存在任何远端执行
 - **版本兼容检查**：设备间通过发现/握手交换插件版本与协议号，版本不兼容的对端会在节点列表与 `lan_peers` 中以 ⚠ 标出

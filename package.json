@@ -1,6 +1,6 @@
 {
   "name": "dsh-cross-collaboration",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.22.0",
@@ -21,12 +21,6 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-connection",
-        "@deepseek-ai/dsh-client-ui-slots",
-        "@deepseek-ai/dsh-client-locale"
-      ],
       "platform": "web"
     }
   },
@@ -36,7 +30,6 @@
     "test": "node --test scripts/queue-mock.cjs"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-settings": "0.0.1-rc.1",
     "@deepseek-ai/schemastery": "^3.18.1",
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.0",

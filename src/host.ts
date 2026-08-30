@@ -8,7 +8,6 @@
 
 import { fileURLToPath } from 'node:url';
 import z from '@deepseek-ai/schemastery';
-import { settingsNamespace } from '@deepseek-ai/dsh-settings';
 import { enqueueItem, removeItem, itemsFor, flushDevice, QUEUE_CAP } from './queue.js';
 import type { QueueItem } from './queue.js';
 
@@ -25,7 +24,9 @@ export const Config = z.object({
 
 type ResolvedConfig = { udpPort: number; deviceName: string; beaconMs: number; relayUrl: string };
 
-const SETTINGS_NS = settingsNamespace('dsh-cross-collaboration');
+// DSH 0.1.2+: ctx.settings namespaces are plain lowercase-hyphenated literals
+// (the old settingsNamespace() helper from @deepseek-ai/dsh-settings is gone).
+const SETTINGS_NS = 'dsh-cross-collaboration';
 const SettingsSchema = z.object({
   deviceName: z.string().default(''),
   workspaceLabel: z.string().default(''),
@@ -154,7 +155,6 @@ export function apply(ctx: any, config: any) {
 
   const subprocess = ctx.get('subprocess') as any;
   const agents = ctx.get('agents') as any;
-  const webRuntime = ctx.get('webRuntime') as any;
 
   const state = {
     gatewayReady: false,
@@ -283,7 +283,12 @@ export function apply(ctx: any, config: any) {
 
   function persistSettingSafe(patch: unknown): void {
     try {
-      if (settingsScope && typeof settingsScope.update === 'function') settingsScope.update(patch);
+      if (settingsScope && typeof settingsScope.update === 'function') {
+        // DSH 0.1.2+: SettingsScope.update returns a Promise (serialized
+        // writes, conflict rejection) — swallow async failures so a stale
+        // write never crashes the host fiber.
+        Promise.resolve(settingsScope.update(patch)).catch(() => {});
+      }
     } catch (e) {}
   }
 
@@ -417,7 +422,9 @@ export function apply(ctx: any, config: any) {
       const roots = agents.roots() as any[];
       for (const r of roots) {
         if (!r) continue;
-        const id = typeof r.sessionId === 'string' ? r.sessionId : (r.session && typeof r.session.id === 'string' ? String(r.session.id) : '');
+        // DSH 0.1.2+: a live Agent carries `.id` (the session id) directly;
+        // the old `sessionId` field no longer exists.
+        const id = typeof r.id === 'string' ? r.id : (r.session && typeof r.session.id === 'string' ? String(r.session.id) : '');
         if (!id) continue;
         let title = '';
         try {
@@ -437,7 +444,7 @@ export function apply(ctx: any, config: any) {
       if (!agents || typeof agents.roots !== 'function') return undefined;
       const roots = agents.roots() as any[];
       if (sessionId) {
-        const hit = roots.find((r) => r && (r.sessionId === sessionId || (r.session && String(r.session.id) === String(sessionId))));
+        const hit = roots.find((r) => r && (r.id === sessionId || (r.session && String(r.session.id) === String(sessionId))));
         if (hit) return hit;
         if (typeof agents.get === 'function') return agents.get(sessionId);
         return undefined;
@@ -487,7 +494,8 @@ export function apply(ctx: any, config: any) {
     let cwd: string | undefined;
     try {
       const root = firstRoot();
-      cwd = root && root.session && root.session.meta && typeof root.session.meta.cwd === 'string' ? root.session.meta.cwd : undefined;
+      // DSH 0.1.2+: creation metadata lives on session.header (cwd may be absent).
+      cwd = root && root.session && root.session.header && typeof root.session.header.cwd === 'string' ? root.session.header.cwd : undefined;
     } catch (e) {}
     if (!cwd) {
       const sandboxPolicy = ctx.get('sandboxPolicy') as any;
@@ -742,7 +750,9 @@ export function apply(ctx: any, config: any) {
       stdio: {
         stdin: 'pipe',
         stdout: 'pipe',
-        stderr: { maxBytes: 65536 },
+        // DSH 0.1.2+: collect mode ({maxBytes}) exposes offset-based readers
+        // (handle.collected), not a stream — use 'pipe' for the raw tail.
+        stderr: 'pipe',
       },
       graceMs: 2000,
     });
@@ -862,10 +872,12 @@ export function apply(ctx: any, config: any) {
   }
 
   // ---------------- fenced client routes ----------------
+  // DSH 0.1.2+: the old `webRuntime.trustedHosts` service is gone — the
+  // host webserver now declares no origin policy of its own and each route
+  // owner enforces its own. The shipped web GUI binds 127.0.0.1, so the
+  // loopback-only fence below is the correct default; an extra host list is
+  // no longer resolvable and stays empty.
   function trustedHosts(): string[] {
-    try {
-      if (webRuntime && Array.isArray(webRuntime.trustedHosts)) return webRuntime.trustedHosts.map(String);
-    } catch (e) {}
     return [];
   }
 
@@ -977,7 +989,9 @@ export function apply(ctx: any, config: any) {
     name: 'lan_peers',
     description:
       'List devices in this cross-device mesh (added by ip:port, auto-discovered on LAN, or learned via gossip), with their identity summaries (device name, workspace label), connection state, and the SESSIONS each device hosts. In DSH one session is one main agent — use the session ids listed here to pick the exact target for lan_message.',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    // DSH 0.1.2+ tool DSL: `parameters` is a property map (per-property
+    // `required: true`), not an explicit JSON-schema object root.
+    parameters: {},
     output: {
       schema: { type: 'object', additionalProperties: true },
       render(args: unknown, value: any) {
@@ -1031,14 +1045,9 @@ export function apply(ctx: any, config: any) {
     description:
       'Send a message to a specific main agent on another device in the cross-device mesh. Identify the device by deviceId, device name, or ip:port (a bare ip:port works even when the address is not in the registry yet). Identify the target SESSION (one session = one main agent in DSH) by its session id via the optional "session" parameter — get session ids from lan_peers; omit "session" to address that device\'s first/only main agent. The message lands in the target agent\'s inbox and wakes it. Empty messages are rejected and content beyond 4000 chars is truncated. If the target device is offline, the message is queued and delivered automatically when it comes back online (queued messages to a closed session are dropped). This is the ONLY cross-device operation: pure communication.',
     parameters: {
-      type: 'object',
-      properties: {
-        peer: { type: 'string', description: 'deviceId, device name, or ip:port of the target peer' },
-        session: { type: 'string', description: 'optional target session id (from lan_peers); omit for the device\'s default main agent' },
-        content: { type: 'string', description: 'message text (max 4000 chars)' },
-      },
-      required: ['peer', 'content'],
-      additionalProperties: false,
+      peer: { type: 'string', description: 'deviceId, device name, or ip:port of the target peer', required: true },
+      session: { type: 'string', description: 'optional target session id (from lan_peers); omit for the device\'s default main agent' },
+      content: { type: 'string', description: 'message text (max 4000 chars)', required: true },
     },
     output: {
       schema: { type: 'object', additionalProperties: true },
