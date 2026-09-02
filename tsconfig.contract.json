@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    // The contract fixture checks our declarations/source against real alpha.5
+    // types. skipLibCheck stays on only to avoid the known DOM+@types/node
+    // global crypto conflict on Windows; missing/mismatched Context members
+    // still fail because the fixture imports and asserts every augmentation.
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*", "tests/contract-types.ts"],
+  "exclude": ["dist", "node_modules", "scripts"]
+}

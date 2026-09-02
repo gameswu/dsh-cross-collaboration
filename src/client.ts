@@ -10,11 +10,25 @@
 //     panel scrolls itself because the sidebar pane clips overflow
 //   - dsh-notifacation-frame: notification registration lives in the Host half
 
+import type { Context } from '@deepseek-ai/cordis';
+import type {} from '@deepseek-ai/cordis-plugin-timer';
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
+
+// Injected by the client bundle wrapper (var React = require('react')).
+// Module-local declaration avoids the global @types/react UMD conflict while
+// keeping the existing createElement call shape type-checking.
+declare const React: {
+  createElement(type: any, props?: any, ...children: any[]): any;
+  useState<T>(initial: T | (() => T)): [T, (next: T | ((prev: T) => T)) => void];
+  useEffect(effect: () => void | (() => void), deps?: readonly unknown[]): void;
+};
+
 export const name = 'dsh-cross-collaboration';
 
 export const inject = ['slots', 'timer'];
 
-export function apply(ctx: any) {
+export function apply(ctx: Context) {
 
   // ---------------- DSH-style glyphs ----------------
   function LanGlyph(props: { size?: number } | undefined): unknown {
@@ -829,7 +843,7 @@ export function apply(ctx: any) {
 
   // ---------------- settings-nav icon swap (LAN glyph for our section) ----------------
   ctx.effect(() => {
-    if (typeof document === 'undefined') return undefined;
+    if (typeof document === 'undefined') return () => {};
     const NAV_LIST_SELECTOR = '[class*="navList"]';
     const NAV_ICON_SELECTOR = '[class*="navIcon"]';
     const NAV_LABEL_SELECTOR = '[class*="navLabel"]';

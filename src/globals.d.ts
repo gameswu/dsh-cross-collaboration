@@ -3,10 +3,13 @@
  * These globals are provided by the DSH harness at runtime (Host and Client);
  * this file is the compile-time contract, derived from the Inspect catalogs.
  *
- * Updated for DSH 0.1.2-alpha.2 (breaking-change migration):
- *  - tool schemas: `parameters` is now a per-property map DSL
- *    (requiredness per property via `required: true`), not a JSON-schema
- *    object root
+ * Updated for DSH 0.1.2-alpha.5 (keeping the 0.1.2-alpha.2 migration;
+ * alpha.3–alpha.5 left the host tool/settings/subprocess surfaces used here
+ * unchanged — the Session.events removal does not affect this plugin):
+ *  - model tools: the host registers explicit root JSON Schemas through
+ *    ctx.tools.register (the raw path; not the defineTool property-map sugar)
+ *  - service faces below alias the real alpha.5 classes; the compile-time
+ *    fixture tests/contract-types.ts asserts every augmentation is present
  *  - ctx.agents: roots()/get() return live Agents carrying `id` (the
  *    session id) and `session` (dsh-session Session) — no `sessionId` field
  *  - session creation metadata lives on `session.header.cwd`, not
@@ -25,20 +28,6 @@
  *    `timer` by dsh-cordis-client-runner (ClientTimerService)
  */
 
-declare const console: {
-  log(...values: unknown[]): void;
-  error(...values: unknown[]): void;
-};
-
-/** Node child-process script only (src/gateway.ts, runs as `node -e`). */
-declare const require: (id: string) => any;
-declare const process: {
-  argv: string[];
-  stdout: { write(data: string): void };
-  stdin: { setEncoding(enc: string): void; on(event: string, listener: (chunk: string) => void): void };
-  exit(code?: number): void;
-};
-
 declare const ctx: {
   get(name: string): unknown;
   on(name: string, listener: (...args: any[]) => unknown): () => void;
@@ -49,175 +38,23 @@ declare const ctx: {
   interval(callback: () => void, delay: number): () => void;
 };
 
-declare const harness: {
-  handle(method: string, handler: (args: any) => unknown | Promise<unknown>): void;
-  defineTool(definition: ToolDefinition): ToolDefinition;
-  registerTool(pluginCtx: unknown, tool: ToolDefinition): () => void;
-};
-
-declare const React: {
-  createElement(type: any, props?: Record<string, unknown> | null, ...children: unknown[]): unknown;
-  useState<T>(initial: T | (() => T)): [T, (next: T | ((prev: T) => T)) => void];
-  useEffect(effect: () => void | (() => void), deps?: readonly unknown[]): void;
-  useSyncExternalStore<T>(subscribe: (onChange: () => void) => () => void, getSnapshot: () => T): T;
-  createRoot(container: unknown): { render(el: unknown): void; unmount(): void };
-};
-
-declare const host: {
-  call(method: string, args?: unknown): Promise<any>;
-};
-
-declare const styles: {
-  insert(css: string): () => void;
-};
-
-/* ---------------- tool schema DSL (unified ValueSchemaSpec) ---------------- */
-
-interface ValueSchemaAnnotations {
-  description?: string;
-  title?: string;
-  default?: unknown;
-  examples?: unknown;
-}
-
-type ValueSchema =
-  | (ValueSchemaAnnotations & { type: 'string'; enum?: readonly string[]; const?: string })
-  | (ValueSchemaAnnotations & { type: 'number' })
-  | (ValueSchemaAnnotations & { type: 'integer' })
-  | (ValueSchemaAnnotations & { type: 'boolean' })
-  | (ValueSchemaAnnotations & { type: 'null' })
-  | (ValueSchemaAnnotations & { type: 'array'; items?: ValueSchema })
-  | (ValueSchemaAnnotations & { type: 'object'; properties?: ParameterSchema; additionalProperties: boolean })
-  | (ValueSchemaAnnotations & { type: 'json' })
-  | (ValueSchemaAnnotations & { oneOf: readonly [ValueSchema, ValueSchema, ...ValueSchema[]] });
-
-/**
- * Tool parameter schema (DSH 0.1.2+): a per-property map over an implicit
- * open object root. Requiredness is the per-property `required: true`
- * annotation — there is no top-level `required`/`additionalProperties`.
- */
-type ParameterSchema = {
-  [name: string]: ValueSchema & { required?: true };
-};
-
-interface ContentBlock {
-  type: string;
-  [key: string]: unknown;
-}
-
-interface ToolOutputDefinition {
-  schema: Record<string, unknown>;
-  render(args: unknown, value: any): ContentBlock[];
-}
-
-interface ToolDefinition {
-  name: string;
-  description: string;
-  parameters: ParameterSchema;
-  output: ToolOutputDefinition;
-  execute(args: any, exec: { signal?: { aborted: boolean } | null }): Promise<unknown>;
-  timeoutMs?: number;
-}
-
 /* ---------------- Host service surfaces used by this plugin ---------------- */
 
-interface SubprocessOutcome {
-  exitCode: number | null;
-  signal: string | null;
-}
+type SubprocessOutcome = import('@deepseek-ai/dsh-subprocess').SubprocessOutcome;
+type SubprocessHandle = import('@deepseek-ai/dsh-subprocess').SubprocessHandle;
+type SubprocessService = import('@deepseek-ai/dsh-subprocess').SubprocessRuntime;
 
-interface SubprocessHandle {
-  stdin?: {
-    writable: boolean;
-    write(data: string): void;
-    on(event: string, listener: (...args: any[]) => void): void;
-  };
-  /** raw stream — present ONLY when spawned with stdout: 'pipe' */
-  stdout?: {
-    setEncoding(enc: string): void;
-    on(event: string, listener: (...args: any[]) => void): void;
-  };
-  /** raw stream — present ONLY when spawned with stderr: 'pipe' */
-  stderr?: {
-    setEncoding(enc: string): void;
-    on(event: string, listener: (...args: any[]) => void): void;
-  };
-  /** offset-based readers for collect-mode streams ({maxBytes}) */
-  collected?: {
-    stdout?: { readFrom(offset: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string } };
-    stderr?: { readFrom(offset: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string } };
-  };
-  done: Promise<SubprocessOutcome>;
-  terminate(): void;
-  waitForExit(signal?: { aborted: boolean }): Promise<boolean>;
-}
+type FsService = import('@deepseek-ai/dsh-fs').FileSystem;
+type SandboxPolicyService = import('@deepseek-ai/dsh-sandbox-policy').SandboxPolicyService;
 
-interface SubprocessService {
-  resolveExecutable(command: string, env?: Record<string, string>, signal?: { aborted: boolean }): Promise<string>;
-  spawn(spec: {
-    argv: readonly string[];
-    cwd: string;
-    stdio: {
-      stdin: 'ignore' | 'pipe' | { data: string };
-      stdout: 'pipe' | 'inherit' | { maxBytes: number };
-      stderr: 'pipe' | 'inherit' | { maxBytes: number };
-    };
-    graceMs: number;
-    signal?: { aborted: boolean };
-    env?: Record<string, string | undefined>;
-  }): SubprocessHandle;
-}
+type LiveAgent = import('@deepseek-ai/dsh-agent').Agent;
+type AgentsService = import('@deepseek-ai/dsh-agent').AgentRegistry;
+type SessionsService = import('@deepseek-ai/dsh-session').SessionStore;
+type SettingsService = import('@deepseek-ai/dsh-settings').SettingsProvider;
+type ToolsService = import('@deepseek-ai/dsh-tools').ToolRuntime;
+type WebServerService = import('@deepseek-ai/dsh-host-webserver').WebServer;
 
-interface FsService {
-  resolve(path: string, opts?: { cwd?: string; signal?: { aborted: boolean } }): Promise<unknown>;
-  readText(target: unknown): Promise<string>;
-  processPath(target: unknown): string;
-}
-
-interface SandboxPolicyService {
-  workspaceRoot?: string;
-}
-
-/** DSH 0.1.2+ live Agent (dsh-agent-loop face): id IS the session id. */
-interface LiveAgent {
-  id: string;
-  session: {
-    id: string;
-    header?: { cwd?: string };
-  };
-  followup(message: unknown): void;
-  whenIdle(): Promise<void>;
-}
-
-interface AgentHandle {
-  agent: LiveAgent;
-  dispose(): Promise<void>;
-}
-
-interface AgentsService {
-  roots(): LiveAgent[];
-  list(): LiveAgent[];
-  get(sessionId: string): LiveAgent | undefined;
-  create(options: {
-    sessionId: string;
-    meta?: {
-      cwd?: string;
-      origin?: 'subagent';
-      parentSession?: string;
-      seedLength?: number;
-      delegationDepth?: number;
-      agentPreset?: string;
-    };
-    agentOptions?: { provider?: string; model?: string };
-    setup?: (agentCtx: { get(name: string): unknown }) => Promise<void>;
-  }): Promise<AgentHandle>;
-}
-
-interface WorkspaceRegistryService {
-  /** synchronous ordered projection (DSH 0.1.2+) */
-  list(): Array<{ title?: string; path?: string }>;
-  resolveByPath(path: string): Promise<{ title?: string; path?: string } | undefined>;
-}
+type WorkspaceRegistryService = import('@deepseek-ai/dsh-workspace').WorkspaceRegistry;
 
 interface NotificationFrameService {
   register(definition: {

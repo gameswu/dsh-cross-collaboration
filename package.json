@@ -1,6 +1,6 @@
 {
   "name": "dsh-cross-collaboration",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.22.0",
@@ -27,10 +27,31 @@
   "scripts": {
     "build": "node scripts/build.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test scripts/queue-mock.cjs"
+    "typecheck:contract": "tsc -p tsconfig.contract.json --noEmit",
+    "pretest": "node scripts/build.cjs",
+    "test": "node --test scripts/queue-mock.cjs tests/host-dispose.test.cjs"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.2"
   },
   "devDependencies": {
-    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/cordis-plugin-timer": "^1.1.4",
+    "@deepseek-ai/dsh-agent": "^0.1.2-alpha.5",
+    "@deepseek-ai/dsh-api-remotes": "^0.1.2-alpha.5",
+    "@deepseek-ai/dsh-attachment": "^0.1.2-alpha.5",
+    "@deepseek-ai/dsh-client-store": "^0.1.2-alpha.5",
+    "@deepseek-ai/dsh-client-ui-renderer": "^0.1.2-alpha.5",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.2-alpha.5",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.2-alpha.5",
+    "@deepseek-ai/dsh-fs": "^0.1.2-alpha.5",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.2-alpha.5",
+    "@deepseek-ai/dsh-sandbox-policy": "^0.1.2-alpha.5",
+    "@deepseek-ai/dsh-session": "^0.1.2-alpha.5",
+    "@deepseek-ai/dsh-settings": "^0.1.2-alpha.5",
+    "@deepseek-ai/dsh-subprocess": "^0.1.2-alpha.5",
+    "@deepseek-ai/dsh-tools": "^0.1.2-alpha.5",
+    "@deepseek-ai/dsh-workspace": "^0.1.2-alpha.5",
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.0",
     "@types/ws": "^8.18.1",

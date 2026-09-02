@@ -2,7 +2,7 @@
 
 让多台运行 [DSH](https://github.com/deepseek-ai/dsh)（DeepSeek Harness）的设备互相发现、互相**发消息唤醒对方的主 Agent**。
 
-> 兼容性：v0.2.0 起要求 **DSH ≥ 0.1.2-alpha.2**（该版本引入了大量破坏性变更，插件已按新服务契约适配：`ctx.agents`/`ctx.settings`/`ctx.workspaceRegistry`/`ctx.tools` 新 API、新工具参数 DSL、subprocess 新 stdio 语义等）。
+> 兼容性：v0.4.0 起要求 **DSH ≥ 0.1.2-alpha.5**。v0.2.0 已按 0.1.2-alpha.2 的新服务契约适配（`ctx.agents`/`ctx.settings`/`ctx.workspaceRegistry`/`ctx.tools` 新 API、新工具参数 DSL、subprocess 新 stdio 语义等）；0.1.2-alpha.3 至 alpha.5 对本地主机工具、设置与子进程接缝无进一步破坏性改动，本插件已复核并通过类型检查与测试。
 
 - **发现**：同一局域网零配置自动互发现；跨网段按 `ip:port` 手动添加（Minecraft 联机式）；添加的节点会通过组网自动同步给其他设备
 - **通信**：唯一的跨设备操作就是发消息。**粒度是会话**——在 DSH 里一个会话就是一个主 Agent，不存在 workspace 级 Agent；消息可以精确投递给对端设备上的指定会话（不指定则投给其默认主 Agent），不存在任何远端执行
@@ -85,7 +85,9 @@ dsh web                                       # 重启生效
 
 ```bash
 pnpm install && pnpm run build     # 编译 src/*.ts → dist/*.js
-pnpm run typecheck                 # 仅类型检查
+pnpm run typecheck                 # 普通类型检查（真实 alpha.5 dev 类型）
+pnpm run typecheck:contract        # Context 增广/服务面契约夹具
+pnpm test                          # pretest 自动 build：离线队列 + 主机卸载/重挂载测试
 node scripts/gateway-smoke.cjs     # LAN 冒烟：组网同步 + 消息往返
 node scripts/relay-smoke.cjs       # 中继冒烟：配对与 E2E 加密往返
 ```

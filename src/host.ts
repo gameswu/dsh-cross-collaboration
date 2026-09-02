@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 import z from '@deepseek-ai/schemastery';
 import { enqueueItem, removeItem, itemsFor, flushDevice, QUEUE_CAP } from './queue.js';
 import type { QueueItem } from './queue.js';
+import type { Context } from '@deepseek-ai/cordis';
+import type {} from '@deepseek-ai/cordis-plugin-timer';
 
 export const name = 'dsh-cross-collaboration';
 
@@ -146,15 +148,15 @@ interface ChatRecord {
   sessionTitle?: string;
 }
 
-export function apply(ctx: any, config: any) {
+export function apply(ctx: Context, config?: ResolvedConfig) {
   const cfg = (config || {}) as ResolvedConfig;
   const udpPort = typeof cfg.udpPort === 'number' ? cfg.udpPort : 45231;
   const rpcPort = udpPort + 1;
   const beaconMs = typeof cfg.beaconMs === 'number' ? cfg.beaconMs : 3000;
   const relayUrl = typeof cfg.relayUrl === 'string' ? cfg.relayUrl : '';
 
-  const subprocess = ctx.get('subprocess') as any;
-  const agents = ctx.get('agents') as any;
+  const subprocess = ctx.get('subprocess') as SubprocessService;
+  const agents = ctx.get('agents') as AgentsService;
 
   const state = {
     gatewayReady: false,
@@ -183,8 +185,8 @@ export function apply(ctx: any, config: any) {
   };
 
   // ---------------- settings persistence ----------------
-  const settings = ctx.get('settings') as any;
-  let settingsScope: any = null;
+  const settings = ctx.get('settings') as SettingsService | undefined;
+  let settingsScope: ReturnType<SettingsService['register']> | null = null;
   let watchOff: (() => void) | null = null;
   if (settings && typeof settings.register === 'function') {
     try {
@@ -281,7 +283,7 @@ export function apply(ctx: any, config: any) {
     }
   }
 
-  function persistSettingSafe(patch: unknown): void {
+  function persistSettingSafe(patch: object): void {
     try {
       if (settingsScope && typeof settingsScope.update === 'function') {
         // DSH 0.1.2+: SettingsScope.update returns a Promise (serialized
@@ -419,7 +421,7 @@ export function apply(ctx: any, config: any) {
     try {
       if (!agents || typeof agents.roots !== 'function') return out;
       const sessionTitle = ctx.get('sessionTitle') as any;
-      const roots = agents.roots() as any[];
+      const roots = agents.roots();
       for (const r of roots) {
         if (!r) continue;
         // DSH 0.1.2+: a live Agent carries `.id` (the session id) directly;
@@ -442,11 +444,11 @@ export function apply(ctx: any, config: any) {
   function findRootAgent(sessionId?: string): any {
     try {
       if (!agents || typeof agents.roots !== 'function') return undefined;
-      const roots = agents.roots() as any[];
+      const roots = agents.roots();
       if (sessionId) {
         const hit = roots.find((r) => r && (r.id === sessionId || (r.session && String(r.session.id) === String(sessionId))));
         if (hit) return hit;
-        if (typeof agents.get === 'function') return agents.get(sessionId);
+        if (typeof agents.get === 'function') return agents.get(sessionId as Parameters<AgentsService['get']>[0]);
         return undefined;
       }
       return roots.length > 0 ? roots[0] : undefined;
@@ -473,7 +475,7 @@ export function apply(ctx: any, config: any) {
 
   // ---------------- workspace detection (DSH durable workspace registry) ----------------
   async function refreshWorkspaces(): Promise<void> {
-    const workspaceRegistry = ctx.get('workspaceRegistry') as any;
+    const workspaceRegistry = ctx.get('workspaceRegistry') as WorkspaceRegistryService | undefined;
     if (workspaceRegistry && typeof workspaceRegistry.list === 'function') {
       try {
         const list = workspaceRegistry.list() as any[];
@@ -498,7 +500,7 @@ export function apply(ctx: any, config: any) {
       cwd = root && root.session && root.session.header && typeof root.session.header.cwd === 'string' ? root.session.header.cwd : undefined;
     } catch (e) {}
     if (!cwd) {
-      const sandboxPolicy = ctx.get('sandboxPolicy') as any;
+      const sandboxPolicy = ctx.get('sandboxPolicy') as SandboxPolicyService | undefined;
       if (sandboxPolicy && typeof sandboxPolicy.workspaceRoot === 'string') cwd = sandboxPolicy.workspaceRoot;
     }
     if (cwd && workspaceRegistry && typeof workspaceRegistry.resolveByPath === 'function') {
@@ -725,7 +727,7 @@ export function apply(ctx: any, config: any) {
       console.error('dshcc:', state.lastError);
       return;
     }
-    const fs = ctx.get('fs') as any;
+    const fs = ctx.get('fs') as FsService | undefined;
     let gatewaySource: string | null = null;
     if (fs && typeof fs.readText === 'function') {
       try {
@@ -742,7 +744,7 @@ export function apply(ctx: any, config: any) {
       return;
     }
     state.nodePath = nodePath;
-    const sandboxPolicy = ctx.get('sandboxPolicy') as any;
+    const sandboxPolicy = ctx.get('sandboxPolicy') as SandboxPolicyService | undefined;
     const cwd = (sandboxPolicy && typeof sandboxPolicy.workspaceRoot === 'string' && sandboxPolicy.workspaceRoot) || '.';
     const handle = subprocess.spawn({
       argv: [nodePath, '-e', gatewaySource, state.deviceId, String(udpPort), state.deviceName, String(beaconMs), String(rpcPort), relayUrl, state.pluginVersion],
@@ -881,8 +883,9 @@ export function apply(ctx: any, config: any) {
     return [];
   }
 
+  const webRouteDisposers: Array<() => void> = [];
   if (ctx.webServer && typeof ctx.webServer.register === 'function') {
-    ctx.webServer.register({
+    const stateOff = ctx.webServer.register({
       kind: 'exact',
       path: '/dshcc/api/state',
       handler: async (req: any, res: any) => {
@@ -890,8 +893,9 @@ export function apply(ctx: any, config: any) {
         writeJson(res, 200, { ok: true, state: snapshot() });
       },
     });
+    if (typeof stateOff === 'function') webRouteDisposers.push(stateOff);
     const postRoute = (path: string, action: (body: any) => Promise<unknown> | unknown) => {
-      ctx.webServer.register({
+      const off = ctx.webServer.register({
         kind: 'exact',
         path: path,
         handler: async (req: any, res: any) => {
@@ -905,6 +909,7 @@ export function apply(ctx: any, config: any) {
           }
         },
       });
+      if (typeof off === 'function') webRouteDisposers.push(off);
     };
     postRoute('/dshcc/api/setName', (body) => {
       const n = String((body && body.name) || '').slice(0, 64);
@@ -980,9 +985,13 @@ export function apply(ctx: any, config: any) {
   }
 
   // ---------------- model tools ----------------
-  const tools = ctx.get('tools') as any;
+  const tools = ctx.get('tools') as ToolsService | undefined;
+  const toolDisposers: Array<() => void> = [];
   function defineTool(definition: any): void {
-    if (tools && typeof tools.register === 'function') tools.register(definition);
+    if (tools && typeof tools.register === 'function') {
+      const off = tools.register(definition);
+      if (typeof off === 'function') toolDisposers.push(off);
+    }
   }
 
   defineTool({
@@ -1124,7 +1133,7 @@ export function apply(ctx: any, config: any) {
   // read the package version once (single source of truth: package.json);
   // the gateway advertises it together with PROTOCOL_COMPAT for peer checks
   (async () => {
-    const fsForVersion = ctx.get('fs') as any;
+    const fsForVersion = ctx.get('fs') as FsService | undefined;
     if (fsForVersion && typeof fsForVersion.readText === 'function') {
       try {
         const raw = await fsForVersion.readText(await fsForVersion.resolve(PACKAGE_JSON_PATH));
@@ -1146,6 +1155,8 @@ export function apply(ctx: any, config: any) {
     workspacesTimer();
     summaryTimer();
     queueTimer();
+    for (const off of webRouteDisposers.splice(0)) { try { off(); } catch (e) {} }
+    for (const off of toolDisposers.splice(0)) { try { off(); } catch (e) {} }
     for (const t of notifTimers) { try { t(); } catch (e) {} }
     notifTimers.clear();
     if (watchOff) { try { watchOff(); } catch (e) {} }
